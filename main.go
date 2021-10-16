@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,8 +17,8 @@ import (
 )
 
 var (
-	dataKey = []byte("some-encryption-key-for-data$#@#") // 32 bytes
-	//indexKey1 = "my-super-secret-encryption-key1"
+	dataKey         = []byte("some-encryption-key-for-data$#@#") // 32 bytes
+	firstNameIdxKey = "my-super-secret-encryption-key1"
 )
 
 type data struct {
@@ -39,7 +42,7 @@ func main() {
 }
 
 func insertSomeData(db *sqlx.DB) error {
-	schema := `CREATE TABLE some_data (id int, data text, index1 text, index2 text);`
+	schema := `CREATE TABLE some_data (id int, data text, firstname_idx text, index2 text);`
 	_, err := db.Exec(schema)
 	if err != nil {
 		return err
@@ -65,6 +68,7 @@ func insertSomeData(db *sqlx.DB) error {
 		return err
 	}
 
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
 	log.Println("Test some data:")
 
 	if err = printData(db, 1); err != nil {
@@ -72,6 +76,44 @@ func insertSomeData(db *sqlx.DB) error {
 	}
 	if err = printData(db, 2); err != nil {
 		return err
+	}
+
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
+	log.Println("Do some index search:")
+
+	if err = searchFirstName(db, "John"); err != nil {
+		return err
+	}
+
+	if err = searchFirstName(db, "Somebody"); err != nil {
+		return err
+	}
+
+	if err = searchFirstName(db, "Nobody"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func searchFirstName(db *sqlx.DB, firstName string) error {
+	log.Printf("Looking for %s\n", firstName)
+
+	firstNameIndex := generateHMACIndex(firstNameIdxKey, firstName)
+
+	var results []struct {
+		ID      int    `db:"id"`
+		EncData []byte `db:"data"`
+	}
+
+	err := db.Select(&results, "SELECT id, data FROM some_data WHERE firstname_idx = ?", firstNameIndex)
+	if err != nil {
+		return err
+	}
+
+	for _, res := range results {
+		dec, _ := decryptDBData(res.EncData)
+		log.Println("Result, ID:", res.ID, "Data:", string(dec))
 	}
 
 	return nil
@@ -89,8 +131,10 @@ func insertData(db *sqlx.DB, index int, d data) error {
 		return err
 	}
 
-	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted))
-	_, err = db.Exec("INSERT INTO some_data (id, data) VALUES (?, ?)", index, encrypted)
+	firstnameIndex := generateHMACIndex(firstNameIdxKey, d.FirstName)
+
+	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex)
+	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx) VALUES (?, ?, ?)", index, encrypted, firstnameIndex)
 	return err
 }
 
@@ -160,9 +204,9 @@ func decryptDBData(b []byte) ([]byte, error) {
 	return plaintext, err
 }
 
-//func generateHMACIndex(key string, field string) string{
-//	sig := hmac.New(sha256.New, []byte(key))
-//	sig.Write([]byte(field))
-//
-//	return hex.EncodeToString(sig.Sum(nil))
-//}
+func generateHMACIndex(key string, field string) string {
+	sig := hmac.New(sha256.New, []byte(key))
+	sig.Write([]byte(field))
+
+	return hex.EncodeToString(sig.Sum(nil))
+}
