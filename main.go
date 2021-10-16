@@ -42,7 +42,7 @@ func main() {
 }
 
 func insertSomeData(db *sqlx.DB) error {
-	schema := `CREATE TABLE some_data (id int, data text, firstname_idx text, index2 text);`
+	schema := `CREATE TABLE some_data (id int, data text, firstname_idx text, firstname_bloomidx text);`
 	_, err := db.Exec(schema)
 	if err != nil {
 		return err
@@ -93,10 +93,102 @@ func insertSomeData(db *sqlx.DB) error {
 		return err
 	}
 
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
+	log.Println("Do some bloom filter search:")
+
+	if err = searchFistNameBloom(db, "John"); err != nil {
+		return err
+	}
+
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
+	log.Println("Do some bloom filter search with secondary filtering:")
+
+	if err = searchFistNameBloomLastName(db, "John", "Doe"); err != nil {
+		return err
+	}
+
+	if err = searchFistNameBloomLastName(db, "John", "Carpenter"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// searchFistNameBloom works on a "truncated" index which will results multiple rows which MAY contain the result we are looking for
+// After the initial search we should check the fetched results for the given name!
+func searchFistNameBloom(db *sqlx.DB, firstName string) error {
+	log.Printf("Looking for %s\n", firstName)
+
+	firstNameBloomIndex := bloomIndex(generateHMACIndex(firstNameIdxKey, firstName))
+
+	var results []struct {
+		ID      int    `db:"id"`
+		EncData []byte `db:"data"`
+	}
+
+	err := db.Select(&results, "SELECT id, data FROM some_data WHERE firstname_bloomidx = ?", firstNameBloomIndex)
+	if err != nil {
+		return err
+	}
+
+	var data data
+	for _, res := range results {
+		dec, _ := decryptDBData(res.EncData)
+		if err = json.Unmarshal(dec, &data); err != nil {
+			log.Println("Unmarshal error", err)
+			continue
+		}
+
+		if data.FirstName == firstName {
+			log.Println("Result MATCHED, ID:", res.ID, "Data:", string(dec))
+			continue
+		}
+
+		// No exact match, just the prefix was the same
+		log.Println("Result NOT matched, ID:", res.ID, "Data:", string(dec))
+	}
+
+	return nil
+}
+
+// searchFistNameBloomSecondName similar to the previous one, but since we'll decrypt the data anyway let's filter it also via last name!
+func searchFistNameBloomLastName(db *sqlx.DB, firstName, lastName string) error {
+	log.Printf("Looking for %s %s\n", firstName, lastName)
+
+	firstNameBloomIndex := bloomIndex(generateHMACIndex(firstNameIdxKey, firstName))
+
+	var results []struct {
+		ID      int    `db:"id"`
+		EncData []byte `db:"data"`
+	}
+
+	err := db.Select(&results, "SELECT id, data FROM some_data WHERE firstname_bloomidx = ?", firstNameBloomIndex)
+	if err != nil {
+		return err
+	}
+
+	var data data
+	for _, res := range results {
+		dec, _ := decryptDBData(res.EncData)
+		if err = json.Unmarshal(dec, &data); err != nil {
+			log.Println("Unmarshal error", err)
+			continue
+		}
+
+		if data.FirstName == firstName && data.LastName == lastName {
+			log.Println("Result matched, ID:", res.ID, "Data:", string(dec))
+			continue
+		}
+
+		// No exact match, just the prefix was the same
+		log.Println("Result NOT matched, ID:", res.ID, "Data:", string(dec))
+	}
+
 	return nil
 }
 
 func searchFirstName(db *sqlx.DB, firstName string) error {
+	// Note: If we need queries like "first name starts with letter J and last name should finish to `body`" then we can also build and index on that!
 	log.Printf("Looking for %s\n", firstName)
 
 	firstNameIndex := generateHMACIndex(firstNameIdxKey, firstName)
@@ -132,9 +224,10 @@ func insertData(db *sqlx.DB, index int, d data) error {
 	}
 
 	firstnameIndex := generateHMACIndex(firstNameIdxKey, d.FirstName)
+	firstnameBloomidx := bloomIndex(firstnameIndex)
 
-	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex)
-	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx) VALUES (?, ?, ?)", index, encrypted, firstnameIndex)
+	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex, "FirstName bloom:", firstnameBloomidx)
+	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx, firstname_bloomidx) VALUES (?, ?, ?, ?)", index, encrypted, firstnameIndex, firstnameBloomidx)
 	return err
 }
 
@@ -209,4 +302,9 @@ func generateHMACIndex(key string, field string) string {
 	sig.Write([]byte(field))
 
 	return hex.EncodeToString(sig.Sum(nil))
+}
+
+func bloomIndex(hmac string) string {
+	// Truncate to a fixed prefix
+	return hmac[:32]
 }
