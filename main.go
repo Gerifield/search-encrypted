@@ -9,8 +9,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -19,11 +21,13 @@ import (
 var (
 	dataKey         = []byte("some-encryption-key-for-data$#@#") // 32 bytes
 	firstNameIdxKey = "my-super-secret-encryption-key1"
+	bornIdxKey      = "my-super-secret-encryption-key2"
 )
 
 type data struct {
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	Born      int    `json:"born"`
 }
 
 func main() {
@@ -42,29 +46,29 @@ func main() {
 }
 
 func insertSomeData(db *sqlx.DB) error {
-	schema := `CREATE TABLE some_data (id int, data text, firstname_idx text, firstname_bloomidx text);`
+	schema := `CREATE TABLE some_data (id int, data text, firstname_idx text, firstname_bloomidx text, born_idx text);`
 	_, err := db.Exec(schema)
 	if err != nil {
 		return err
 	}
 
-	if err = insertData(db, 1, data{FirstName: "John", LastName: "Carter"}); err != nil {
+	if err = insertData(db, 1, data{FirstName: "John", LastName: "Carter", Born: 1982}); err != nil {
 		return err
 	}
 
-	if err = insertData(db, 2, data{FirstName: "John", LastName: "Doe"}); err != nil {
+	if err = insertData(db, 2, data{FirstName: "John", LastName: "Doe", Born: 1994}); err != nil {
 		return err
 	}
 
-	if err = insertData(db, 3, data{FirstName: "John", LastName: "Wick"}); err != nil {
+	if err = insertData(db, 3, data{FirstName: "John", LastName: "Wick", Born: 1999}); err != nil {
 		return err
 	}
 
-	if err = insertData(db, 4, data{FirstName: "Johnatan", LastName: "Somebody"}); err != nil {
+	if err = insertData(db, 4, data{FirstName: "Johnatan", LastName: "Somebody", Born: 1993}); err != nil {
 		return err
 	}
 
-	if err = insertData(db, 5, data{FirstName: "Somebody", LastName: "Else"}); err != nil {
+	if err = insertData(db, 5, data{FirstName: "Somebody", LastName: "Else", Born: 2001}); err != nil {
 		return err
 	}
 
@@ -109,6 +113,62 @@ func insertSomeData(db *sqlx.DB) error {
 
 	if err = searchFistNameBloomLastName(db, "John", "Carpenter"); err != nil {
 		return err
+	}
+
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
+	log.Println("Do some bucket-like filtering for a between query:")
+	if err = searchBornBetween(db, 1995, 2005); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// searchBornBetween uses the generated buckets to look for values between some fields
+func searchBornBetween(db *sqlx.DB, start, end int) error {
+
+	// Generate the bucket keys from the start till the end
+	// We know we use 10 for each step
+
+	first := (start / 10) * 10
+	last := (end/10)*10 + 10 // +10 to inlcude the last bucket too
+
+	log.Printf("Looking for values between %d (%d), %d (%d)\n", start, first, end, last)
+
+	var buckets []interface{} // the Select use []interface{}
+	var placeHolders []string
+	for i := first; i <= last; i += 10 {
+		generated := generateBornIndex(bornIdxKey, i)
+		buckets = append(buckets, generated) // We just need the hmac, but the truncate won't hurt anyway
+		placeHolders = append(placeHolders, "?")
+		log.Println("Added bucket for", i, generated)
+	}
+
+	var results []struct {
+		ID      int    `db:"id"`
+		EncData []byte `db:"data"`
+	}
+
+	err := db.Select(&results, "SELECT id, data FROM some_data WHERE born_idx IN ("+strings.Join(placeHolders, ",")+")", buckets...)
+	if err != nil {
+		return err
+	}
+
+	var data data
+	for _, res := range results {
+		dec, _ := decryptDBData(res.EncData)
+		if err = json.Unmarshal(dec, &data); err != nil {
+			log.Println("Unmarshal error", err)
+			continue
+		}
+
+		if start <= data.Born && data.Born <= end {
+			log.Println("Result MATCHED, ID:", res.ID, "Data:", string(dec))
+			continue
+		}
+
+		// No exact match, just the prefix was the same
+		log.Println("Result NOT matched, ID:", res.ID, "Data:", string(dec))
 	}
 
 	return nil
@@ -225,9 +285,10 @@ func insertData(db *sqlx.DB, index int, d data) error {
 
 	firstnameIndex := generateHMACIndex(firstNameIdxKey, d.FirstName)
 	firstnameBloomidx := bloomIndex(firstnameIndex)
+	bornIdx := generateBornIndex(bornIdxKey, d.Born)
 
-	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex, "FirstName bloom:", firstnameBloomidx)
-	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx, firstname_bloomidx) VALUES (?, ?, ?, ?)", index, encrypted, firstnameIndex, firstnameBloomidx)
+	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex, "FirstName bloom:", firstnameBloomidx, "Born index bucket:", bornIdx)
+	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx, firstname_bloomidx, born_idx) VALUES (?, ?, ?, ?, ?)", index, encrypted, firstnameIndex, firstnameBloomidx, bornIdx)
 	return err
 }
 
@@ -302,6 +363,14 @@ func generateHMACIndex(key string, field string) string {
 	sig.Write([]byte(field))
 
 	return hex.EncodeToString(sig.Sum(nil))
+}
+
+func generateBornIndex(key string, born int) string {
+	// floor down to the 10th part using the conversion in the type system
+	// of course different values could have different categorization
+	bucket := (born / 10) * 10
+
+	return generateHMACIndex(key, fmt.Sprintf("%d", bucket))
 }
 
 func bloomIndex(hmac string) string {
