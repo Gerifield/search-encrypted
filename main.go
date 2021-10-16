@@ -69,7 +69,7 @@ func insertSomeData(db *sqlx.DB) error {
 	}
 
 	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
-	log.Println("Test some data:")
+	log.Println("Fetch some data via index:")
 
 	if err = printData(db, 1); err != nil {
 		return err
@@ -79,7 +79,7 @@ func insertSomeData(db *sqlx.DB) error {
 	}
 
 	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
-	log.Println("Do some index search:")
+	log.Println("Do some blind index search:")
 
 	if err = searchFirstName(db, "John"); err != nil {
 		return err
