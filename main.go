@@ -176,7 +176,7 @@ func searchFistNameBloomLastName(db *sqlx.DB, firstName, lastName string) error 
 		}
 
 		if data.FirstName == firstName && data.LastName == lastName {
-			log.Println("Result matched, ID:", res.ID, "Data:", string(dec))
+			log.Println("Result MATCHED, ID:", res.ID, "Data:", string(dec))
 			continue
 		}
 
