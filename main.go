@@ -116,6 +116,17 @@ func insertSomeData(db *sqlx.DB) error {
 	}
 
 	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
+	log.Println("Do some search and filtering for case insensitive input:")
+
+	if err = searchFirstName(db, "SoMeBoDy"); err != nil {
+		return err
+	}
+
+	if err = searchFistNameBloomLastName(db, "JoHn", "DoE"); err != nil {
+		return err
+	}
+
+	log.Println("---------------------------------------------------------------------------------------------------------------------------------------")
 	log.Println("Do some bucket-like filtering for a between query:")
 	if err = searchBornBetween(db, 1995, 2005); err != nil {
 		return err
@@ -126,7 +137,6 @@ func insertSomeData(db *sqlx.DB) error {
 
 // searchBornBetween uses the generated buckets to look for values between some fields
 func searchBornBetween(db *sqlx.DB, start, end int) error {
-
 	// Generate the bucket keys from the start till the end
 	// We know we use 10 for each step
 
@@ -235,7 +245,7 @@ func searchFistNameBloomLastName(db *sqlx.DB, firstName, lastName string) error 
 			continue
 		}
 
-		if data.FirstName == firstName && data.LastName == lastName {
+		if strings.ToUpper(data.FirstName) == strings.ToUpper(firstName) && strings.ToUpper(data.LastName) == strings.ToUpper(lastName) {
 			log.Println("Result MATCHED, ID:", res.ID, "Data:", string(dec))
 			continue
 		}
@@ -360,6 +370,7 @@ func decryptDBData(b []byte) ([]byte, error) {
 
 func generateHMACIndex(key string, field string) string {
 	sig := hmac.New(sha256.New, []byte(key))
+	field = strings.ToUpper(field)
 	sig.Write([]byte(field))
 
 	return hex.EncodeToString(sig.Sum(nil))
