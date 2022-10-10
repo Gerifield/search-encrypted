@@ -150,7 +150,7 @@ func searchBornBetween(db *sqlx.DB, start, end int) error {
 	var buckets []interface{} // the Select use []interface{}
 	var placeHolders []string
 	for i := first; i <= last; i += 10 {
-		generated := indexer.Bucket(bornIdxKey, i, 10)
+		generated := indexer.IntBucket(bornIdxKey, i, 10)
 		buckets = append(buckets, generated) // We just need the hmac, but the truncate won't hurt anyway
 		placeHolders = append(placeHolders, "?")
 		log.Println("Added bucket for", i, generated)
@@ -297,7 +297,7 @@ func insertData(db *sqlx.DB, index int, d data) error {
 
 	firstnameIndex := indexer.HMAC(firstNameIdxKey, d.FirstName)
 	firstnameBloomidx := bloomIndex(firstnameIndex)
-	bornIdx := indexer.Bucket(bornIdxKey, d.Born, 10)
+	bornIdx := indexer.IntBucket(bornIdxKey, d.Born, 10)
 
 	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex, "FirstName bloom:", firstnameBloomidx, "Born index bucket:", bornIdx)
 	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx, firstname_bloomidx, born_idx) VALUES (?, ?, ?, ?, ?)", index, encrypted, firstnameIndex, firstnameBloomidx, bornIdx)

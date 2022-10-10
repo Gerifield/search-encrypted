@@ -59,9 +59,9 @@ func (i *Index) HMAC(key string, value string) string {
 	return hex.EncodeToString(sig.Sum(nil))
 }
 
-// Bucket index generation
+// IntBucket index generation
 // This will generate an index using a simple method to put the `num` param in a given bucket
-func (i *Index) Bucket(key string, num int, allBuckets int) string {
+func (i *Index) IntBucket(key string, num int, allBuckets int) string {
 	// floor down to the allBuckets-th part using the conversion in the type system
 	// of course different values could have different categorization
 	bucketIndex := (num / allBuckets) * allBuckets
