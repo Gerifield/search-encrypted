@@ -3,16 +3,14 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"strings"
+
+	"github.com/gerifield/search-encrypted/index"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -30,6 +28,8 @@ type data struct {
 	Born      int    `json:"born"`
 }
 
+var indexer *index.Index
+
 func main() {
 	db, err := sqlx.Connect("sqlite3", ":memory:")
 	if err != nil {
@@ -37,6 +37,8 @@ func main() {
 		return
 	}
 	defer db.Close()
+
+	indexer = index.New(index.WithCaseInsensitive(true))
 
 	err = insertSomeData(db)
 	if err != nil {
@@ -148,7 +150,7 @@ func searchBornBetween(db *sqlx.DB, start, end int) error {
 	var buckets []interface{} // the Select use []interface{}
 	var placeHolders []string
 	for i := first; i <= last; i += 10 {
-		generated := generateBornIndex(bornIdxKey, i)
+		generated := indexer.Bucket(bornIdxKey, i, 10)
 		buckets = append(buckets, generated) // We just need the hmac, but the truncate won't hurt anyway
 		placeHolders = append(placeHolders, "?")
 		log.Println("Added bucket for", i, generated)
@@ -189,7 +191,7 @@ func searchBornBetween(db *sqlx.DB, start, end int) error {
 func searchFistNameBloom(db *sqlx.DB, firstName string) error {
 	log.Printf("Looking for %s\n", firstName)
 
-	firstNameBloomIndex := bloomIndex(generateHMACIndex(firstNameIdxKey, firstName))
+	firstNameBloomIndex := bloomIndex(indexer.HMAC(firstNameIdxKey, firstName))
 
 	var results []struct {
 		ID      int    `db:"id"`
@@ -225,7 +227,7 @@ func searchFistNameBloom(db *sqlx.DB, firstName string) error {
 func searchFistNameBloomLastName(db *sqlx.DB, firstName, lastName string) error {
 	log.Printf("Looking for %s %s\n", firstName, lastName)
 
-	firstNameBloomIndex := bloomIndex(generateHMACIndex(firstNameIdxKey, firstName))
+	firstNameBloomIndex := bloomIndex(indexer.HMAC(firstNameIdxKey, firstName))
 
 	var results []struct {
 		ID      int    `db:"id"`
@@ -261,7 +263,7 @@ func searchFirstName(db *sqlx.DB, firstName string) error {
 	// Note: If we need queries like "first name starts with letter J and last name should finish to `body`" then we can also build and index on that!
 	log.Printf("Looking for %s\n", firstName)
 
-	firstNameIndex := generateHMACIndex(firstNameIdxKey, firstName)
+	firstNameIndex := indexer.HMAC(firstNameIdxKey, firstName)
 
 	var results []struct {
 		ID      int    `db:"id"`
@@ -293,9 +295,9 @@ func insertData(db *sqlx.DB, index int, d data) error {
 		return err
 	}
 
-	firstnameIndex := generateHMACIndex(firstNameIdxKey, d.FirstName)
+	firstnameIndex := indexer.HMAC(firstNameIdxKey, d.FirstName)
 	firstnameBloomidx := bloomIndex(firstnameIndex)
-	bornIdx := generateBornIndex(bornIdxKey, d.Born)
+	bornIdx := indexer.Bucket(bornIdxKey, d.Born, 10)
 
 	log.Println("ID:", index, "Encrypted:", base64.StdEncoding.EncodeToString(encrypted), "FirstName idx:", firstnameIndex, "FirstName bloom:", firstnameBloomidx, "Born index bucket:", bornIdx)
 	_, err = db.Exec("INSERT INTO some_data (id, data, firstname_idx, firstname_bloomidx, born_idx) VALUES (?, ?, ?, ?, ?)", index, encrypted, firstnameIndex, firstnameBloomidx, bornIdx)
@@ -366,22 +368,6 @@ func decryptDBData(b []byte) ([]byte, error) {
 	nonce, ciphertext := b[:nonceSize], b[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	return plaintext, err
-}
-
-func generateHMACIndex(key string, field string) string {
-	sig := hmac.New(sha256.New, []byte(key))
-	field = strings.ToUpper(field)
-	sig.Write([]byte(field))
-
-	return hex.EncodeToString(sig.Sum(nil))
-}
-
-func generateBornIndex(key string, born int) string {
-	// floor down to the 10th part using the conversion in the type system
-	// of course different values could have different categorization
-	bucket := (born / 10) * 10
-
-	return generateHMACIndex(key, fmt.Sprintf("%d", bucket))
 }
 
 func bloomIndex(hmac string) string {
