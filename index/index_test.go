@@ -1,6 +1,7 @@
 package index
 
 import (
+	"crypto/sha256"
 	"crypto/sha512"
 	"testing"
 
@@ -8,8 +9,10 @@ import (
 )
 
 func TestAlgOption(t *testing.T) {
-	i := New(WithHashAlg(sha512.New))
+	i := New()
+	assert.IsType(t, sha256.New(), i.hashAlg())
 
+	i = New(WithHashAlg(sha512.New))
 	assert.IsType(t, sha512.New(), i.hashAlg())
 }
 
